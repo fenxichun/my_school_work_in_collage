@@ -1,0 +1,323 @@
+LIBRARY IEEE;
+USE IEEE.STD_LOGIC_1164.ALL;
+
+ENTITY LED_CONTROL IS
+    PORT (
+        clk         : IN  STD_LOGIC;          -- 1MHz时钟输入（保留）
+        mode_sel    : IN  STD_LOGIC_VECTOR(1 DOWNTO 0);  -- 2位模式选择（保留）
+        led         : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)   -- 16个LED输出（保留）
+        -- 已删除 rst_n 复位端口
+    );
+END ENTITY LED_CONTROL;
+
+ARCHITECTURE rtl OF LED_CONTROL IS
+    -- 幕布模式状态定义（保留）
+    TYPE curtain_state_type IS (STATE_LIGHT, STATE_EXTINGUISH);
+
+    -- 时钟分频信号（250ms脉冲）- 保留初始值（替代复位初始化）
+    SIGNAL clk_div_250ms     : INTEGER RANGE 0 TO 249999 := 0;
+    SIGNAL div_250ms_pulse   : STD_LOGIC := '0';
+
+    -- PWM时钟分频（1kHz，用于呼吸灯占空比步进）- 保留初始值
+    SIGNAL clk_div_pwm       : INTEGER RANGE 0 TO 999 := 0;
+    SIGNAL clk_pwm           : STD_LOGIC := '0';
+
+    -- PWM计数器（用于呼吸灯占空比比较，周期2ms）- 保留初始值
+    SIGNAL pwm_cnt           : INTEGER RANGE 0 TO 1999 := 0;
+
+    -- 走马灯模式信号 - 保留初始值
+    SIGNAL run_light_pos     : INTEGER RANGE 0 TO 15 := 15;  -- 初始点亮LD15
+    SIGNAL run_light_dir     : BOOLEAN := TRUE;              -- 方向：TRUE=左→右
+    SIGNAL run_light_led     : STD_LOGIC_VECTOR(15 DOWNTO 0) := (OTHERS => '0');
+
+    -- 幕布模式信号 - 保留初始值
+    SIGNAL curtain_state     : curtain_state_type := STATE_LIGHT;
+    SIGNAL curtain_step      : INTEGER RANGE 0 TO 7 := 0;
+    SIGNAL curtain_led       : STD_LOGIC_VECTOR(15 DOWNTO 0) := (OTHERS => '0');
+
+    -- 同步呼吸灯信号 - 保留初始值
+    SIGNAL breath_sync_duty  : INTEGER RANGE 0 TO 2000 := 0;  -- 占空比初始0
+    SIGNAL breath_sync_dir   : BOOLEAN := TRUE;              -- 方向：TRUE=呼
+    SIGNAL breath_sync_led   : STD_LOGIC_VECTOR(15 DOWNTO 0) := (OTHERS => '0');
+
+    -- 异步呼吸灯信号（分颜色组）- 保留初始值
+    SIGNAL breath_async_duty_r : INTEGER RANGE 0 TO 2000 := 0;
+    SIGNAL breath_async_duty_y : INTEGER RANGE 0 TO 2000 := 500;
+    SIGNAL breath_async_duty_g : INTEGER RANGE 0 TO 2000 := 1000;
+    SIGNAL breath_async_duty_b : INTEGER RANGE 0 TO 2000 := 1500;
+    SIGNAL breath_async_dir   : BOOLEAN := TRUE;
+    SIGNAL breath_async_led   : STD_LOGIC_VECTOR(15 DOWNTO 0) := (OTHERS => '0');
+
+BEGIN
+
+-------------------------------------------------------------------------------
+-- 进程1：生成250ms脉冲（走马灯/幕布的时间间隔）- 
+-------------------------------------------------------------------------------
+PROCESS (clk)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块
+    IF RISING_EDGE(clk) THEN  -- 直接判断时钟上升沿
+        IF clk_div_250ms = 249999 THEN  -- 1MHz * 0.25s = 250000个周期
+            clk_div_250ms <= 0;
+            div_250ms_pulse <= '1';
+        ELSE
+            clk_div_250ms <= clk_div_250ms + 1;
+            div_250ms_pulse <= '0';
+        END IF;
+    END IF;
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程2：生成1kHz PWM时钟（呼吸灯占空比步进时钟）- 已删除复位判断
+-------------------------------------------------------------------------------
+PROCESS (clk)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块
+    IF RISING_EDGE(clk) THEN
+        IF clk_div_pwm = 999 THEN  -- 1MHz / 1000 = 1kHz
+            clk_div_pwm <= 0;
+            clk_pwm <= NOT clk_pwm;
+        ELSE
+            clk_div_pwm <= clk_div_pwm + 1;
+        END IF;
+    END IF;
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程3：PWM计数器（呼吸灯占空比比较用，周期2ms）- 
+-------------------------------------------------------------------------------
+PROCESS (clk)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块
+    IF RISING_EDGE(clk) THEN
+        IF pwm_cnt = 1999 THEN
+            pwm_cnt <= 0;
+        ELSE
+            pwm_cnt <= pwm_cnt + 1;
+        END IF;
+    END IF;
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程4：走马灯模式控制 - 
+-------------------------------------------------------------------------------
+PROCESS (clk)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块（初始值由信号声明保留）
+    IF RISING_EDGE(clk) THEN
+        IF div_250ms_pulse = '1' THEN
+            IF run_light_dir THEN
+                -- 左→右：位置从15减到0
+                IF run_light_pos = 0 THEN
+                    run_light_dir <= FALSE;
+                    run_light_pos <= run_light_pos + 1;
+                ELSE
+                    run_light_pos <= run_light_pos - 1;
+                END IF;
+            ELSE
+                -- 右→左：位置从0加到15
+                IF run_light_pos = 15 THEN
+                    run_light_dir <= TRUE;
+                    run_light_pos <= run_light_pos - 1;
+                ELSE
+                    run_light_pos <= run_light_pos + 1;
+                END IF;
+            END IF;
+        END IF;
+    END IF;
+END PROCESS;
+
+-- 走马灯LED输出（仅当前位置亮）- 无复位逻辑，保留原代码
+PROCESS (run_light_pos)
+BEGIN
+    run_light_led <= (OTHERS => '0');
+    run_light_led(run_light_pos) <= '1';
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程5：幕布模式状态/步骤控制 - 
+-------------------------------------------------------------------------------
+PROCESS (clk)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块（初始值由信号声明保留）
+    IF RISING_EDGE(clk) THEN
+        IF div_250ms_pulse = '1' THEN
+            CASE curtain_state IS
+                WHEN STATE_LIGHT =>
+                    -- 点亮阶段：步骤0→7，完成后转熄灭
+                    IF curtain_step = 7 THEN
+                        curtain_state <= STATE_EXTINGUISH;
+                        curtain_step <= 7;
+                    ELSE
+                        curtain_step <= curtain_step + 1;
+                    END IF;
+                WHEN STATE_EXTINGUISH =>
+                    -- 熄灭阶段：步骤7→0，完成后转点亮
+                    IF curtain_step = 0 THEN
+                        curtain_state <= STATE_LIGHT;
+                        curtain_step <= 0;
+                    ELSE
+                        curtain_step <= curtain_step - 1;
+                    END IF;
+            END CASE;
+        END IF;
+    END IF;
+END PROCESS;
+
+-- 幕布LED输出（中间→两边点亮，两边→中间熄灭）- 无复位逻辑，保留原修改后代码
+PROCESS (curtain_state, curtain_step)
+    VARIABLE i : INTEGER;
+BEGIN
+    curtain_led <= (OTHERS => '0');
+    CASE curtain_state IS
+        WHEN STATE_LIGHT =>
+            -- 点亮阶段：循环边界用常量0~7，按步骤点亮
+            FOR i IN 0 TO 7 LOOP
+                IF i <= curtain_step THEN
+                    curtain_led(7 - i) <= '1';  -- 左侧：7→0
+                    curtain_led(8 + i) <= '1';  -- 右侧：8→15
+                END IF;
+            END LOOP;
+        WHEN STATE_EXTINGUISH =>
+            -- 熄灭阶段：循环边界用常量0~7，按步骤熄灭
+            curtain_led <= (OTHERS => '1');
+            FOR i IN 0 TO 7 LOOP
+                IF i >= curtain_step THEN
+                    curtain_led(7 - i) <= '0';
+                    curtain_led(8 + i) <= '0';
+                END IF;
+            END LOOP;
+    END CASE;
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程6：同步呼吸灯占空比控制 -
+-------------------------------------------------------------------------------
+PROCESS (clk_pwm)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块（初始值由信号声明保留）
+    IF RISING_EDGE(clk_pwm) THEN
+        IF breath_sync_dir THEN
+            -- 呼：占空比从0→2000（2秒）
+            IF breath_sync_duty = 2000 THEN
+                breath_sync_dir <= FALSE;
+                breath_sync_duty <= breath_sync_duty - 1;
+            ELSE
+                breath_sync_duty <= breath_sync_duty + 1;
+            END IF;
+        ELSE
+            -- 吸：占空比从2000→0（2秒）
+            IF breath_sync_duty = 0 THEN
+                breath_sync_dir <= TRUE;
+                breath_sync_duty <= breath_sync_duty + 1;
+            ELSE
+                breath_sync_duty <= breath_sync_duty - 1;
+            END IF;
+        END IF;
+    END IF;
+END PROCESS;
+
+-- 同步呼吸灯LED输出 - 无复位逻辑，保留原代码
+PROCESS (pwm_cnt, breath_sync_duty)
+BEGIN
+    IF pwm_cnt < breath_sync_duty THEN
+        breath_sync_led <= (OTHERS => '1');
+    ELSE
+        breath_sync_led <= (OTHERS => '0');
+    END IF;
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程7：异步呼吸灯占空比控制 -
+-------------------------------------------------------------------------------
+PROCESS (clk_pwm)  -- 敏感列表移除rst_n
+BEGIN
+    -- 已删除：IF rst_n = '0' THEN 复位判断块（初始值由信号声明保留）
+    IF RISING_EDGE(clk_pwm) THEN
+        IF breath_async_dir THEN
+            -- 呼：占空比增加
+            IF breath_async_duty_r = 2000 THEN
+                breath_async_dir <= FALSE;
+                breath_async_duty_r <= breath_async_duty_r - 1;
+                breath_async_duty_y <= breath_async_duty_y - 1;
+                breath_async_duty_g <= breath_async_duty_g - 1;
+                breath_async_duty_b <= breath_async_duty_b - 1;
+            ELSE
+                breath_async_duty_r <= breath_async_duty_r + 1;
+                breath_async_duty_y <= breath_async_duty_y + 1;
+                breath_async_duty_g <= breath_async_duty_g + 1;
+                breath_async_duty_b <= breath_async_duty_b + 1;
+            END IF;
+        ELSE
+            -- 吸：占空比减少
+            IF breath_async_duty_r = 0 THEN
+                breath_async_dir <= TRUE;
+                breath_async_duty_r <= breath_async_duty_r + 1;
+                breath_async_duty_y <= breath_async_duty_y + 1;
+                breath_async_duty_g <= breath_async_duty_g + 1;
+                breath_async_duty_b <= breath_async_duty_b + 1;
+            ELSE
+                breath_async_duty_r <= breath_async_duty_r - 1;
+                breath_async_duty_y <= breath_async_duty_y - 1;
+                breath_async_duty_g <= breath_async_duty_g - 1;
+                breath_async_duty_b <= breath_async_duty_b - 1;
+            END IF;
+        END IF;
+    END IF;
+END PROCESS;
+
+-- 异步呼吸灯LED输出（分颜色组）- 无复位逻辑，保留原代码
+PROCESS (pwm_cnt, breath_async_duty_r, breath_async_duty_y, breath_async_duty_g, breath_async_duty_b)
+    VARIABLE i : INTEGER;
+BEGIN
+    -- 红组（LD0~LD3）
+    FOR i IN 0 TO 3 LOOP
+        IF pwm_cnt < breath_async_duty_r THEN
+            breath_async_led(i) <= '1';
+        ELSE
+            breath_async_led(i) <= '0';
+        END IF;
+    END LOOP;
+    -- 黄组（LD4~LD7）
+    FOR i IN 4 TO 7 LOOP
+        IF pwm_cnt < breath_async_duty_y THEN
+            breath_async_led(i) <= '1';
+        ELSE
+            breath_async_led(i) <= '0';
+        END IF;
+    END LOOP;
+    -- 绿组（LD8~LD11）
+    FOR i IN 8 TO 11 LOOP
+        IF pwm_cnt < breath_async_duty_g THEN
+            breath_async_led(i) <= '1';
+        ELSE
+            breath_async_led(i) <= '0';
+        END IF;
+    END LOOP;
+    -- 蓝组（LD12~LD15）
+    FOR i IN 12 TO 15 LOOP
+        IF pwm_cnt < breath_async_duty_b THEN
+            breath_async_led(i) <= '1';
+        ELSE
+            breath_async_led(i) <= '0';
+        END IF;
+    END LOOP;
+END PROCESS;
+
+-------------------------------------------------------------------------------
+-- 进程8：模式选择（输出最终LED信号）-
+-------------------------------------------------------------------------------
+PROCESS (mode_sel, run_light_led, curtain_led, breath_sync_led, breath_async_led)
+BEGIN
+    IF mode_sel = "00" THEN
+        led <= run_light_led;     -- 走马灯模式
+    ELSIF mode_sel = "01" THEN
+        led <= curtain_led;       -- 幕布模式
+    ELSIF mode_sel = "10" THEN
+        led <= breath_sync_led;   -- 同步呼吸灯
+    ELSE 
+        led <= breath_async_led;  -- 异步呼吸灯
+    END IF;
+END PROCESS;
+
+END ARCHITECTURE rtl;
