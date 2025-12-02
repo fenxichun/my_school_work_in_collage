@@ -1,3 +1,4 @@
+//要用的话改一下
 LIBRARY IEEE;
 USE IEEE.STD_LOGIC_1164.ALL;
 
