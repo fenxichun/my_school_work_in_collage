@@ -1,0 +1,230 @@
+//直接修改数组里的01构成的图案即可，Z那个是渐变的，注意你用01拼出来的是反的图案
+
+
+
+LIBRARY IEEE;
+USE IEEE.STD_LOGIC_1164.ALL;
+USE IEEE.STD_LOGIC_UNSIGNED.ALL;
+
+ENTITY dot_matrix_single IS
+    PORT (
+        CLK_1MHz  : IN  STD_LOGIC;  -- 实验板1MHz时钟输入
+        ROW       : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);  -- ROW0~ROW7
+        COLR      : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);  -- 红色列（硬件接反→实际控制绿）
+        COLG      : OUT STD_LOGIC_VECTOR(7 DOWNTO 0)   -- 绿色列（硬件接反→实际控制红）
+    );
+END dot_matrix_single;
+
+ARCHITECTURE Behavioral OF dot_matrix_single IS
+    -- 1. 时钟分频：1MHz→1Hz（计数500000次翻转）
+    SIGNAL div_cnt  : STD_LOGIC_VECTOR(18 DOWNTO 0) := (OTHERS => '0');
+    SIGNAL clk_1Hz  : STD_LOGIC := '0';
+    
+    -- 2. 字符索引：0~5（6个字符/图形）
+    SIGNAL char_idx : STD_LOGIC_VECTOR(2 DOWNTO 0) := (OTHERS => '0');
+    
+    -- 修正：字符数据类型（6个字符，每个字符8行×8位列）
+    TYPE char_row IS ARRAY(7 DOWNTO 0) OF STD_LOGIC_VECTOR(7 DOWNTO 0);  -- 单个字符：8行×8列
+    TYPE char_array IS ARRAY(5 DOWNTO 0) OF char_row;  -- 6个字符集合
+    SIGNAL char_data : char_array := (
+        -- 字符0：Z（首字母1，当前为中间单行全亮，后续可按需修改形状）
+        (
+            "11111111",
+            "11000000",
+            "01100000",
+            "00110000",
+            "00011000",
+            "00001100",
+            "00000110",
+            "11111111"
+        ),
+        -- 字符1：S（首字母2，保持原数据）
+        (
+            "00111100",
+            "11000110",
+            "00000011",
+            "00001100",
+            "00110000",
+            "11000000",
+            "01100011",
+            "00111100"
+        ),
+        -- 字符2：心形（红色，保持原数据）
+        (
+            "00000000",
+            "01100110",
+            "11111111",
+            "11111111",
+            "11111111",
+            "01111110",
+            "00111100",
+            "00011000"
+        ),
+        -- 字符3：五角星（绿色，保持原数据）
+        (
+            "00011000",
+            "00111100",
+            "01111110",
+            "11111111",
+            "01111110",
+            "00111100",
+            "00011000",
+            "00000000"
+        ),
+        -- 字符4：正方形（黄色=红+绿，保持原数据）
+        (
+            "11111111",
+            "10000001",
+            "10000001",
+            "10000001",
+            "10000001",
+            "10000001",
+            "10000001",
+            "11111111"
+        ),
+        -- 字符5：H形（用于绝对红→绝对绿渐变）
+        (
+            "10000001",  -- 行0：左右2列亮（H顶部）
+            "10000001",  -- 行1：左右2列亮
+            "10000001",  -- 行2：左右2列亮
+            "11111111",  -- 行3：全亮（H中间横杠）
+            "10000001",  -- 行4：左右2列亮
+            "10000001",  -- 行5：左右2列亮
+            "10000001",  -- 行6：左右2列亮
+            "10000001"   -- 行7：左右2列亮（H底部）
+        )
+    );
+    
+    -- 4. 行扫描计数器（0~7，循环扫描）
+    SIGNAL row_cnt  : STD_LOGIC_VECTOR(2 DOWNTO 0) := (OTHERS => '0');
+    SIGNAL row_sel  : STD_LOGIC_VECTOR(7 DOWNTO 0) := (OTHERS => '1');  -- 行低电平选中
+    
+    -- PWM计数器（8位，控制渐变占空比，频率≈3.9kHz无闪烁）
+    SIGNAL PWM_cnt : STD_LOGIC_VECTOR(7 DOWNTO 0) := (OTHERS => '0');
+
+BEGIN
+    -- PWM计数器进程（1MHz驱动，循环计数0~255）
+    PROCESS(CLK_1MHz)  -- 移除RST_N敏感信号
+    BEGIN
+        -- 移除复位逻辑，上电后直接开始计数
+        IF CLK_1MHz'EVENT AND CLK_1MHz = '1' THEN
+            PWM_cnt <= PWM_cnt + '1';
+        END IF;
+    END PROCESS;
+    
+    -- 模块1：1MHz→1Hz分频（移除复位）
+    PROCESS(CLK_1MHz)  -- 移除RST_N敏感信号
+    BEGIN
+        -- 移除复位逻辑，上电后自动开始分频
+        IF CLK_1MHz'EVENT AND CLK_1MHz = '1' THEN
+            IF div_cnt = "1111010000100100000" THEN  -- 十进制500000
+                div_cnt <= (OTHERS => '0');
+                clk_1Hz <= NOT clk_1Hz;
+            ELSE
+                div_cnt <= div_cnt + '1';
+            END IF;
+        END IF;
+    END PROCESS;
+    
+    -- 模块2：字符索引切换（移除复位）
+    PROCESS(clk_1Hz)  -- 移除RST_N敏感信号
+    BEGIN
+        -- 移除复位逻辑，上电后自动循环切换字符
+        IF clk_1Hz'EVENT AND clk_1Hz = '1' THEN
+            IF char_idx = "101" THEN  -- 5→0循环
+                char_idx <= (OTHERS => '0');
+            ELSE
+                char_idx <= char_idx + '1';
+            END IF;
+        END IF;
+    END PROCESS;
+    
+    -- 模块3：行扫描（移除复位）
+    PROCESS(CLK_1MHz)  -- 移除RST_N敏感信号
+    BEGIN
+        -- 移除复位逻辑，上电后自动开始行扫描
+        IF CLK_1MHz'EVENT AND CLK_1MHz = '1' THEN
+            row_cnt <= row_cnt + '1';
+            -- 行选通：当前行低电平，其他高电平
+            CASE row_cnt IS
+                WHEN "000" => row_sel <= "11111101";  -- ROW0选中
+                WHEN "001" => row_sel <= "11111011";  -- ROW1选中
+                WHEN "010" => row_sel <= "11110111";  -- ROW2选中
+                WHEN "011" => row_sel <= "11101111";  -- ROW3选中
+                WHEN "100" => row_sel <= "11011111";  -- ROW4选中
+                WHEN "101" => row_sel <= "10111111";  -- ROW5选中
+                WHEN "110" => row_sel <= "01111111";  -- ROW6选中
+                WHEN "111" => row_sel <= "11111110";  -- ROW7选中
+                WHEN OTHERS => row_sel <= "11111111";
+            END CASE;
+        END IF;
+    END PROCESS;
+    
+    -- 模块4：颜色与列信号控制（移除复位相关逻辑）
+    PROCESS(char_idx, row_cnt, char_data, PWM_cnt)
+    VARIABLE h_row_data : STD_LOGIC_VECTOR(7 DOWNTO 0);  -- 临时变量存H当前行数据
+    BEGIN
+        h_row_data := char_data(5)(CONV_INTEGER(row_cnt));  -- 提前获取H的当前行数据
+        CASE char_idx IS
+            -- 字符0：Z（纯红色）
+            WHEN "000" =>
+                COLG <= char_data(0)(CONV_INTEGER(row_cnt));
+                COLR <= (OTHERS => '0');
+            
+            -- 字符1：S（纯绿色）
+            WHEN "001" =>
+                COLR <= char_data(1)(CONV_INTEGER(row_cnt));
+                COLG <= (OTHERS => '0');
+            
+            -- 字符2：心形（纯红色）
+            WHEN "010" =>
+                COLG <= char_data(2)(CONV_INTEGER(row_cnt));
+                COLR <= (OTHERS => '0');
+            
+            -- 字符3：五角星（纯绿色）
+            WHEN "011" =>
+                COLR <= char_data(3)(CONV_INTEGER(row_cnt));
+                COLG <= (OTHERS => '0');
+            
+            -- 字符4：正方形（黄色）
+            WHEN "100" =>
+                COLR <= char_data(4)(CONV_INTEGER(row_cnt));
+                COLG <= char_data(4)(CONV_INTEGER(row_cnt));
+            
+            -- 字符5：H形（红→绿渐变）
+            WHEN "101" =>
+                CASE row_cnt IS
+                    WHEN "000" =>  -- 绝对红
+                        COLG <= h_row_data;
+                        COLR <= (OTHERS => '0');
+                    WHEN "001" =>  -- 80%红，20%绿
+                        IF PWM_cnt <= X"CC" THEN COLG <= h_row_data; ELSE COLG <= (OTHERS => '0'); END IF;
+                        IF PWM_cnt <= X"33" THEN COLR <= h_row_data; ELSE COLR <= (OTHERS => '0'); END IF;
+                    WHEN "010" =>  -- 60%红，40%绿
+                        IF PWM_cnt <= X"99" THEN COLG <= h_row_data; ELSE COLG <= (OTHERS => '0'); END IF;
+                        IF PWM_cnt <= X"66" THEN COLR <= h_row_data; ELSE COLR <= (OTHERS => '0'); END IF;
+                    WHEN "011" =>  -- 40%红，60%绿
+                        IF PWM_cnt <= X"66" THEN COLG <= h_row_data; ELSE COLG <= (OTHERS => '0'); END IF;
+                        IF PWM_cnt <= X"99" THEN COLR <= h_row_data; ELSE COLR <= (OTHERS => '0'); END IF;
+                    WHEN "100" =>  -- 20%红，80%绿
+                        IF PWM_cnt <= X"33" THEN COLG <= h_row_data; ELSE COLG <= (OTHERS => '0'); END IF;
+                        IF PWM_cnt <= X"CC" THEN COLR <= h_row_data; ELSE COLR <= (OTHERS => '0'); END IF;
+                    WHEN "101" | "110" | "111" =>  -- 绝对绿
+                        COLG <= (OTHERS => '0');
+                        COLR <= h_row_data;
+                    WHEN OTHERS =>
+                        COLR <= (OTHERS => '0');
+                        COLG <= (OTHERS => '0');
+                END CASE;
+            
+            -- 其他情况全灭
+            WHEN OTHERS =>
+                COLR <= (OTHERS => '0');
+                COLG <= (OTHERS => '0');
+        END CASE;
+    END PROCESS;
+    
+    -- 输出映射
+    ROW <= row_sel;
+
+END Behavioral;
